@@ -1,6 +1,7 @@
 
 require "clipboard"
 require "app_toggle"
+require "translate"
 
 
 -- time
