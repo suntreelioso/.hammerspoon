@@ -1,112 +1,129 @@
 --[[
-This is my attempt to implement a jumpcut replacement in Lua/Hammerspoon.
-It monitors the clipboard/pasteboard for changes, and stores the strings you copy to the transfer area.
-You can access this history on the menu (Unicode scissors icon).
-Clicking on any item will add it to your transfer area.
-If you open the menu while pressing option/alt, you will enter the Direct Paste Mode. This means that the selected item will be
-"typed" instead of copied to the active clipboard.
-The clipboard persists across launches.
--> Ng irc suggestion: hs.settings.set("jumpCutReplacementHistory", clipboard_history)
+Hammerspoon Clipboard Manager (Deduplication Enhanced)
+Monitors clipboard changes, stores history, and prevents duplicate entries.
 ]]--
 
--- Feel free to change those settings
-local frequency = 0.8 -- Speed in seconds to check for clipboard changes. If you check too frequently, you will loose performance, if you check sparsely you will loose copies
-local hist_size = 25 -- How many items to keep on history
-local label_length = 40 -- How wide (in characters) the dropdown menu should be. Copies larger than this will have their label truncated and end with "…" (unicode for elipsis ...)
-local honor_clearcontent = false --asmagill request. If any application clears the pasteboard, we also remove it from the history https://groups.google.com/d/msg/hammerspoon/skEeypZHOmM/Tg8QnEj_N68J
-local pasteOnSelect = false -- Auto-type on click
+-- Settings
+local frequency = 0.8           -- Check for clipboard changes every X seconds
+local hist_size = 50            -- Number of items to keep in history
+local label_length = 60         -- Max length of characters displayed in the menu
+local honor_clearcontent = false -- If true, removes last item if an app clears the pasteboard
+local pasteOnSelect = false     -- Auto-type/paste on selection
 
--- Don't change anything bellow this line
+-- Core components initialization
 local jumpcut = hs.menubar.new()
-jumpcut:setTooltip("Jumpcut replacement")
-local pasteboard = require("hs.pasteboard") -- http://www.hammerspoon.org/docs/hs.pasteboard.html
-local settings = require("hs.settings") -- http://www.hammerspoon.org/docs/hs.settings.html
-local last_change = pasteboard.changeCount() -- displays how many times the pasteboard owner has changed // Indicates a new copy has been made
+jumpcut:setTooltip("Clipboard History")
+local pasteboard = require("hs.pasteboard")
+local settings = require("hs.settings")
+local last_change = pasteboard.changeCount()
 
---Array to store the clipboard history
-local clipboard_history = settings.get("so.victor.hs.jumpcut") or {} --If no history is saved on the system, create an empty history
+-- Load history from settings or initialize an empty table
+local clipboard_history = settings.get("so.victor.hs.jumpcut") or {}
 
--- Append a history counter to the menu
+-- Update menu title and counter
 function setTitle()
   if (#clipboard_history == 0) then
-    jumpcut:setTitle("Clip") -- Unicode magic
-    else
-      jumpcut:setTitle("Clip("..#clipboard_history..")") -- updates the menu counter
+    jumpcut:setTitle("Clip")
+  else
+    jumpcut:setTitle("Clip("..#clipboard_history..")")
   end
 end
 
-function putOnPaste(string,key)
+-- Put item back on pasteboard or paste directly
+function putOnPaste(string, key)
   if (pasteOnSelect) then
     hs.eventtap.keyStrokes(string)
     pasteboard.setContents(string)
     last_change = pasteboard.changeCount()
   else
-    if (key.alt == true) then -- If the option/alt key is active when clicking on the menu, perform a "direct paste", without changing the clipboard
-      hs.eventtap.keyStrokes(string) -- Defeating paste blocking http://www.hammerspoon.org/go/#pasteblock
+    if (key.alt == true) then -- Perform "direct paste" if Option/Alt is held
+      hs.eventtap.keyStrokes(string)
     else
       pasteboard.setContents(string)
-      last_change = pasteboard.changeCount() -- Updates last_change to prevent item duplication when putting on paste
+      last_change = pasteboard.changeCount()
     end
   end
 end
 
--- Clears the clipboard and history
+-- Clear all history
 function clearAll()
   pasteboard.clearContents()
   clipboard_history = {}
-  settings.set("so.victor.hs.jumpcut",clipboard_history)
-  now = pasteboard.changeCount()
+  settings.set("so.victor.hs.jumpcut", clipboard_history)
+  last_change = pasteboard.changeCount()
   setTitle()
 end
 
--- Clears the last added to the history
+-- Clear the last item from history
 function clearLastItem()
-  table.remove(clipboard_history,#clipboard_history)
-  settings.set("so.victor.hs.jumpcut",clipboard_history)
-  now = pasteboard.changeCount()
+  table.remove(clipboard_history, #clipboard_history)
+  settings.set("so.victor.hs.jumpcut", clipboard_history)
+  last_change = pasteboard.changeCount()
   setTitle()
 end
 
+-- Store clipboard content with deduplication logic
 function pasteboardToClipboard(item)
-  -- Loop to enforce limit on qty of elements in history. Removes the oldest items
-  while (#clipboard_history >= hist_size) do
-    table.remove(clipboard_history,1)
+  if item == nil or item == "" then return end
+
+  -- Deduplication logic:
+  -- Check if the item already exists in history; if so, remove it.
+  for i, v in ipairs(clipboard_history) do
+    if v == item then
+      table.remove(clipboard_history, i)
+      break -- Found the duplicate, stop looking
+    end
   end
+
+  -- Ensure we don't exceed the history size limit
+  while (#clipboard_history >= hist_size) do
+    table.remove(clipboard_history, 1)
+  end
+
+  -- Insert the new (or moved) item at the end of the list
   table.insert(clipboard_history, item)
-  settings.set("so.victor.hs.jumpcut",clipboard_history) -- updates the saved history
-  setTitle() -- updates the menu counter
+  
+  -- Persist settings and update UI
+  settings.set("so.victor.hs.jumpcut", clipboard_history)
+  setTitle()
 end
 
--- Dynamic menu by cmsj https://github.com/Hammerspoon/hammerspoon/issues/61#issuecomment-64826257
+-- Dynamically populate the menu
 populateMenu = function(key)
-  setTitle() -- Update the counter every time the menu is refreshed
+  setTitle()
   menuData = {}
   if (#clipboard_history == 0) then
-    table.insert(menuData, {title="None", disabled = true}) -- If the history is empty, display "None"
+    table.insert(menuData, {title="None", disabled = true})
   else
-    for k,v in pairs(clipboard_history) do
+    -- Iterate backwards so the newest item appears at the top
+    for i = #clipboard_history, 1, -1 do
+      local v = clipboard_history[i]
+      local displayTitle = v
       if (string.len(v) > label_length) then
-        table.insert(menuData,1, {title=string.sub(v,0,label_length).."…", fn = function() putOnPaste(v,key) end }) -- Truncate long strings
-      else
-        table.insert(menuData,1, {title=v, fn = function() putOnPaste(v,key) end })
-      end -- end if else
-    end-- end for
-  end-- end if else
-  -- footer
+        displayTitle = string.sub(v, 0, label_length) .. "…"
+      end
+      table.insert(menuData, {
+        title = displayTitle, 
+        fn = function() putOnPaste(v, key) end 
+      })
+    end
+  end
+
   table.insert(menuData, {title="-"})
   table.insert(menuData, {title="Clear All", fn = function() clearAll() end })
+  
   if (key.alt == true or pasteOnSelect) then
     table.insert(menuData, {title="Direct Paste Mode ✍", disabled=true})
   end
   return menuData
 end
 
--- If the pasteboard owner has changed, we add the current item to our history and update the counter.
+-- Function to monitor pasteboard changes
 function storeCopy()
   now = pasteboard.changeCount()
   if (now > last_change) then
     current_clipboard = pasteboard.getContents()
-    -- asmagill requested this feature. It prevents the history from keeping items removed by password managers
+    
     if (current_clipboard == nil and honor_clearcontent) then
       clearLastItem()
     else
@@ -116,11 +133,15 @@ function storeCopy()
   end
 end
 
---Checks for changes on the pasteboard. Is it possible to replace with eventtap?
+-- Start the timer to poll for clipboard changes
 timer = hs.timer.new(frequency, storeCopy)
 timer:start()
 
-setTitle() --Avoid wrong title if the user already has something on his saved history
+-- Initial UI setup
+setTitle()
 jumpcut:setMenu(populateMenu)
 
-hs.hotkey.bind({"cmd", "shift"}, "v", function() jumpcut:popupMenu(hs.mouse.getAbsolutePosition()) end)
+-- Bind hotkey CMD+SHIFT+V to show the clipboard menu
+hs.hotkey.bind({"cmd", "shift"}, "v", function() 
+  jumpcut:popupMenu(hs.mouse.getAbsolutePosition()) 
+end)
