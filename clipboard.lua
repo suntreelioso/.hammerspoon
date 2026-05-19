@@ -6,7 +6,7 @@ Monitors clipboard changes, stores history, and prevents duplicate entries.
 -- Settings
 local frequency = 0.8           -- Check for clipboard changes every X seconds
 local hist_size = 50            -- Number of items to keep in history
-local label_length = 40         -- Max length of characters displayed in the menu
+local label_length = 60         -- Max length of characters displayed in the menu
 local honor_clearcontent = false -- If true, removes last item if an app clears the pasteboard
 local pasteOnSelect = false     -- Auto-type/paste on selection
 
